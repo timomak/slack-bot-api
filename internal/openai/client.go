@@ -21,6 +21,8 @@ type Client struct {
 	baseURL   string
 	client    *http.Client
 	logger    *log.Logger
+	debug     bool
+	logs      bool
 }
 
 // Message represents a single message in the OpenAI chat completion request
@@ -51,6 +53,11 @@ type ChatCompletionResponse struct {
 
 // New creates a new OpenAI client
 func New(cfg *config.Config, logger *log.Logger) *Client {
+	if cfg.Logs {
+		logger.Printf("Initializing OpenAI client with model: %s, max tokens: %d", 
+			cfg.OpenAIModel, cfg.OpenAIMaxTokens)
+	}
+	
 	return &Client{
 		apiKey:    cfg.OpenAIAPIKey,
 		model:     cfg.OpenAIModel,
@@ -60,16 +67,27 @@ func New(cfg *config.Config, logger *log.Logger) *Client {
 			Timeout: 30 * time.Second,
 		},
 		logger: logger,
+		debug:  cfg.Debug,
+		logs:   cfg.Logs,
 	}
 }
 
 // TranslateToGenAlpha translates a message to Gen Alpha slang
 func (c *Client) TranslateToGenAlpha(ctx context.Context, message, username string) (string, error) {
+	if c.logs {
+		c.logger.Printf("Translating message to Gen Alpha slang for user: %s", username)
+		c.logger.Printf("Original message: %s", message)
+	}
+	
 	// Create the request to OpenAI
 	prompt := fmt.Sprintf(
 		"Translate the following message to Gen Alpha slang/language (TikTok style, with emojis, internet abbreviations, and current youth trends). " +
 		"Make it humorous but keep the original meaning. The message is from %s: \"%s\"", 
 		username, message)
+	
+	if c.logs {
+		c.logger.Printf("Generated prompt for OpenAI: %s", prompt)
+	}
 	
 	messages := []Message{
 		{
@@ -95,6 +113,10 @@ func (c *Client) TranslateToGenAlpha(ctx context.Context, message, username stri
 		return "", fmt.Errorf("error marshaling request: %w", err)
 	}
 
+	if c.logs {
+		c.logger.Printf("Sending request to OpenAI API using model: %s", c.model)
+	}
+
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", c.baseURL, bytes.NewBuffer(jsonBody))
 	if err != nil {
@@ -106,11 +128,21 @@ func (c *Client) TranslateToGenAlpha(ctx context.Context, message, username stri
 	req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", c.apiKey))
 
 	// Make the request
+	startTime := time.Now()
+	if c.logs {
+		c.logger.Printf("Making API request to OpenAI at: %s", startTime.Format(time.RFC3339))
+	}
+	
 	resp, err := c.client.Do(req)
 	if err != nil {
 		return "", fmt.Errorf("error making request to OpenAI: %w", err)
 	}
 	defer resp.Body.Close()
+	
+	if c.logs {
+		c.logger.Printf("Received response from OpenAI in %v", time.Since(startTime))
+		c.logger.Printf("Response status code: %d", resp.StatusCode)
+	}
 
 	// Read the response body
 	body, err := io.ReadAll(resp.Body)
@@ -134,6 +166,13 @@ func (c *Client) TranslateToGenAlpha(ctx context.Context, message, username stri
 		return "", fmt.Errorf("no completion choices returned from OpenAI")
 	}
 
+	translatedText := completionResponse.Choices[0].Message.Content
+	
+	if c.logs {
+		c.logger.Printf("Successfully translated message to Gen Alpha slang")
+		c.logger.Printf("Translation: %s", translatedText)
+	}
+
 	// Return the translated text
-	return completionResponse.Choices[0].Message.Content, nil
+	return translatedText, nil
 } 

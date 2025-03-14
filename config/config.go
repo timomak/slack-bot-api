@@ -2,8 +2,11 @@ package config
 
 import (
 	"errors"
+	"log"
 	"os"
 	"strings"
+
+	"github.com/joho/godotenv"
 )
 
 // Config holds all configuration for the application
@@ -21,10 +24,16 @@ type Config struct {
 
 	// App configuration
 	Debug             bool
+	Logs              bool
 }
 
 // Load reads configuration from environment variables
 func Load() (*Config, error) {
+	// Load .env file if it exists
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: .env file not found, using environment variables")
+	}
+
 	// Check for required env variables
 	slackBotToken := os.Getenv("SLACK_BOT_TOKEN")
 	if slackBotToken == "" {
@@ -59,6 +68,9 @@ func Load() (*Config, error) {
 
 	// Debug flag
 	debug := os.Getenv("DEBUG") == "true"
+	
+	// Logs flag
+	logs := os.Getenv("LOGS") == "true"
 
 	// Maximum tokens for OpenAI response
 	openAIMaxTokens := 1024
@@ -72,5 +84,6 @@ func Load() (*Config, error) {
 		OpenAIModel:      openAIModel,
 		OpenAIMaxTokens:  openAIMaxTokens,
 		Debug:            debug,
+		Logs:             logs,
 	}, nil
 } 
