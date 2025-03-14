@@ -280,6 +280,33 @@ services:
         max-file: "3"
 ```
 
+### Deploying to Render.com
+
+To deploy this bot to Render.com:
+
+1. Push your code to a GitHub repository
+2. Log in to your Render account
+3. Click "New" and select "Web Service"
+4. Connect your GitHub repository
+5. Configure the service:
+   - **Name**: Choose a name for your service
+   - **Environment**: Select "Go"
+   - **Region**: Choose the region closest to you
+   - **Branch**: Select your default branch
+   - **Build Command**: `go build -o app ./cmd/bot`
+   - **Start Command**: `./app`
+
+6. Under "Environment Variables", add all required environment variables:
+   - `SLACK_BOT_TOKEN`
+   - `SLACK_APP_TOKEN`
+   - `SLACK_TARGET_USERS`
+   - `OPENAI_API_KEY`
+   - And any optional variables you want to use (`OPENAI_MODEL`, `DEBUG`, `LOGS`)
+
+7. Click "Create Web Service"
+
+Render will automatically detect the PORT environment variable and route traffic to your service.
+
 ## Security Considerations
 
 - Never commit your `.env` file with actual credentials
