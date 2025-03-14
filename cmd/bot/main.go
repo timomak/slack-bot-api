@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
@@ -42,38 +41,9 @@ func main() {
 		cancel()
 	}()
 
-	// Start a simple HTTP server for health checks and to satisfy Render's port requirements
-	port := os.Getenv("PORT")
-	if port == "" {
-		port = "8080" // Default port if not specified
-	}
-	
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("Gen Alpha Slack Bot is running! 🤖"))
-	})
-	
-	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("OK"))
-	})
-	
-	server := &http.Server{Addr: ":" + port}
-	
-	go func() {
-		logger.Printf("Starting HTTP server on port %s...", port)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			logger.Printf("HTTP server error: %v", err)
-		}
-	}()
-
 	// Start the bot
 	logger.Println("Starting the Gen Alpha translation bot...")
 	if err := slackBot.Start(ctx); err != nil {
 		logger.Fatalf("Bot error: %v", err)
-	}
-	
-	// Shutdown the HTTP server when the bot is done
-	if err := server.Shutdown(context.Background()); err != nil {
-		logger.Printf("HTTP server shutdown error: %v", err)
 	}
 } 
