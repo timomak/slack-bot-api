@@ -1,0 +1,32 @@
+# Environment variables
+.env
+.env.*
+!.env.example
+
+# Binary files
+bin/
+/slack-bot-api
+
+# Build related
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# Log files
+*.log
+
+# macOS specific
+.DS_Store
+
+# Editor files
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Dependency directories
+vendor/ 
