@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"time"
 
 	"github.com/slack-go/slack"
 	"github.com/slack-go/slack/slackevents"
 	"github.com/slack-go/slack/socketmode"
 
 	"github.com/user/slack-bot-api/config"
+	"github.com/user/slack-bot-api/maps"
 )
 
 // Client handles communication with the Slack API
@@ -104,6 +106,14 @@ func New(cfg *config.Config, logger *log.Logger) (*Client, error) {
 func (c *Client) Start(ctx context.Context) error {
 	if c.logs {
 		c.logger.Println("Starting Slack client with Socket Mode...")
+		
+		// Only run setup verification when logs are enabled
+		if err := c.VerifySetup(ctx); err != nil {
+			c.logger.Printf("WARNING: Setup verification found issues: %v", err)
+		}
+	} else {
+		// Simple startup message when logs are disabled
+		c.logger.Println("Starting Slack client...")
 	}
 	
 	// Run the socket mode client in a goroutine
@@ -119,6 +129,166 @@ func (c *Client) Start(ctx context.Context) error {
 	return nil
 }
 
+// VerifySetup checks that everything is correctly configured
+func (c *Client) VerifySetup(ctx context.Context) error {
+	c.logger.Println("Verifying Slack bot setup...")
+	
+	// Check authentication
+	authTest, err := c.api.AuthTestContext(ctx)
+	if err != nil {
+		return fmt.Errorf("authentication test failed: %w", err)
+	}
+	
+	c.logger.Printf("✅ Connected as: %s (UserID: %s, TeamName: %s)", 
+		authTest.User, authTest.UserID, authTest.Team)
+	
+	// Check each channel
+	c.logger.Println("Verifying channel access...")
+	channelErrors := false
+	
+	for channelID := range c.channelIDs {
+		channelInfo, err := c.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+			ChannelID: channelID,
+		})
+		
+		if err != nil {
+			c.logger.Printf("❌ Channel access error for %s: %v", channelID, err)
+			channelErrors = true
+			continue
+		}
+		
+		// Check if bot is a member of the channel
+		members, _, err := c.api.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+			ChannelID: channelID,
+		})
+		
+		if err != nil {
+			c.logger.Printf("❌ Cannot verify membership for channel %s (%s): %v", 
+				channelInfo.Name, channelID, err)
+			channelErrors = true
+			continue
+		}
+		
+		botInChannel := false
+		for _, memberID := range members {
+			if memberID == authTest.UserID {
+				botInChannel = true
+				break
+			}
+		}
+		
+		if !botInChannel {
+			c.logger.Printf("❌ Bot is NOT a member of channel %s (%s). Please add the bot using /invite @%s", 
+				channelInfo.Name, channelID, authTest.User)
+			channelErrors = true
+			continue
+		}
+		
+		c.logger.Printf("✅ Channel verified: %s (%s)", channelInfo.Name, channelID)
+	}
+	
+	// Check user access
+	c.logger.Println("Verifying user access...")
+	userErrors := false
+	
+	for targetUser := range c.targetUsers {
+		// Skip IDs that look like user IDs as they don't need username verification
+		if strings.HasPrefix(targetUser, "U") && len(targetUser) > 8 {
+			user, err := c.api.GetUserInfoContext(ctx, targetUser)
+			if err != nil {
+				c.logger.Printf("❌ Cannot get info for user ID %s: %v", targetUser, err)
+				userErrors = true
+			} else {
+				c.logger.Printf("✅ User ID verified: %s (%s)", user.Name, targetUser)
+			}
+			continue
+		}
+		
+		// Try to find user by username
+		users, err := c.api.GetUsersContext(ctx)
+		if err != nil {
+			c.logger.Printf("❌ Cannot retrieve users list: %v", err)
+			userErrors = true
+			continue
+		}
+		
+		foundUser := false
+		for _, user := range users {
+			if user.Name == targetUser {
+				foundUser = true
+				c.logger.Printf("✅ Username verified: %s (%s)", user.Name, user.ID)
+				break
+			}
+		}
+		
+		if !foundUser {
+			c.logger.Printf("❌ Username '%s' not found in workspace. Check for typos or use the user ID instead.", 
+				targetUser)
+			userErrors = true
+		}
+	}
+	
+	// Test if we can listen for events
+	c.logger.Println("Checking event subscriptions...")
+	c.logger.Println("⚠️ To verify event reception, please send a test message in one of the monitored channels.")
+	
+	// Send a test message to verify if Slack events are set up properly
+	c.testEventSubscription(ctx)
+
+	if channelErrors || userErrors {
+		return fmt.Errorf("setup verification found issues with channels and/or users")
+	}
+	
+	c.logger.Println("✅ Slack setup verification completed successfully!")
+	return nil
+}
+
+// testEventSubscription sends a test message to verify event subscriptions
+func (c *Client) testEventSubscription(ctx context.Context) {
+	// Only try to send a test message if we have at least one channel
+	if len(c.channelIDs) == 0 {
+		c.logger.Println("⚠️ No channels configured, skipping event subscription test")
+		return
+	}
+	
+	// Skip sending test message if DEBUG mode is not enabled
+	if !c.debug {
+		c.logger.Println("ℹ️ Skipping self-test message (enable DEBUG=true to send test messages)")
+		c.logger.Println("⚠️ If you're not receiving events, check your Event Subscriptions in Slack API settings")
+		return
+	}
+	
+	// Get the first channel ID
+	var channelID string
+	for id := range c.channelIDs {
+		channelID = id
+		break
+	}
+	
+	c.logger.Printf("🧪 Sending a self-test message to channel %s to verify event subscriptions...", channelID)
+	
+	// Create a unique message so we can identify it
+	testMsg := fmt.Sprintf("🔍 Bot self-test message (timestamp: %s) - If you see this message but no events are logged, check your Event Subscriptions in Slack API", 
+		time.Now().Format(time.RFC3339))
+	
+	// Send the message
+	_, _, err := c.api.PostMessageContext(
+		ctx,
+		channelID,
+		slack.MsgOptionText(testMsg, false),
+	)
+	
+	if err != nil {
+		c.logger.Printf("❌ Failed to send test message: %v", err)
+		c.logger.Println("⚠️ This may indicate the bot lacks permissions to post in this channel")
+		return
+	}
+	
+	c.logger.Println("✅ Test message sent successfully")
+	c.logger.Println("⚠️ If you don't see any event logs after this, your Slack app's Event Subscriptions may not be set up correctly")
+	c.logger.Println("⚠️ Check that Socket Mode is enabled AND you've subscribed to message events in your Slack app settings")
+}
+
 // ProcessEvents processes Slack events
 func (c *Client) ProcessEvents(ctx context.Context, processor func(ctx context.Context, event *slack.MessageEvent) error) {
 	if c.logs {
@@ -127,10 +297,31 @@ func (c *Client) ProcessEvents(ctx context.Context, processor func(ctx context.C
 		c.logger.Println("===============================================")
 		c.logger.Printf("Bot is monitoring %d channels for messages from %d target users", 
 			len(c.channelIDs), len(c.targetUsers))
+		c.logger.Println("Channels monitored:", strings.Join(maps.Keys(c.channelIDs), ", "))
+		c.logger.Println("Target users:", strings.Join(maps.Keys(c.targetUsers), ", "))
 		c.logger.Println("===============================================\n")
+		c.logger.Println("⚠️ WAITING FOR EVENTS - If no events appear below when you send messages, check your Slack app configuration")
 	}
 	
+	// Create a ticker to log periodic heartbeats
+	ticker := time.NewTicker(60 * time.Second)
+	defer ticker.Stop()
+	
+	go func() {
+		for {
+			select {
+			case <-ticker.C:
+				c.logger.Println("❤️ Bot is still alive and listening for events...")
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+	
 	for evt := range c.socketClient.Events {
+		// Debug log for ALL events received from Slack
+		c.logger.Printf("🔍 DEBUG - Received event from Slack: Type=%s", evt.Type)
+		
 		// Handle events by type
 		switch evt.Type {
 		case socketmode.EventTypeConnecting:
@@ -139,81 +330,114 @@ func (c *Client) ProcessEvents(ctx context.Context, processor func(ctx context.C
 			c.logger.Println("Connection failed. Retrying later...")
 		case socketmode.EventTypeConnected:
 			c.logger.Println("Connected to Slack with Socket Mode.")
+		case socketmode.EventTypeHello:
+			c.logger.Println("🎉 Received Hello from Slack - connection fully established")
+		case socketmode.EventTypeDisconnect:
+			c.logger.Println("⚠️ Disconnected from Slack")
 		case socketmode.EventTypeEventsAPI:
-			// Acknowledge the event
+			// Acknowledge the event immediately
 			c.socketClient.Ack(*evt.Request)
+
+			// Log raw event for troubleshooting
+			c.logger.Printf("📨 Received event from Slack Events API: %+v", evt)
 
 			// Parse the event
 			eventsAPIEvent, ok := evt.Data.(slackevents.EventsAPIEvent)
 			if !ok {
-				c.logger.Printf("Error: Events API event expected but got %T", evt.Data)
+				c.logger.Printf("❌ Error: Events API event expected but got %T", evt.Data)
 				continue
 			}
 
-			if c.logs {
-				c.logger.Printf("Event received: %s (type: %s)", eventsAPIEvent.Type, eventsAPIEvent.InnerEvent.Type)
-			}
+			// Log the complete event structure
+			c.logger.Printf("📨 Event details - Type: %s, InnerEvent Type: %s", 
+				eventsAPIEvent.Type, eventsAPIEvent.InnerEvent.Type)
 
 			// Handle message events
-			switch eventsAPIEvent.Type {
-			case "message":
-				// Convert to message event
-				messageEvent, ok := eventsAPIEvent.InnerEvent.Data.(*slack.MessageEvent)
-				if !ok {
-					c.logger.Printf("Error: Message event expected but got %T", eventsAPIEvent.InnerEvent.Data)
-					continue
-				}
-
-				if c.logs {
-					c.logger.Printf("Message event received from channel: %s, user: %s", 
-						messageEvent.Channel, messageEvent.User)
-				}
-
-				// Process only messages from monitored channels
-				if !c.channelIDs[messageEvent.Channel] {
-					if c.debug || c.logs {
-						c.logger.Printf("Ignoring message from non-monitored channel: %s", messageEvent.Channel)
+			if eventsAPIEvent.Type == slackevents.CallbackEvent {
+				innerEvent := eventsAPIEvent.InnerEvent
+				
+				// Log inner event type for troubleshooting
+				c.logger.Printf("🔍 Inner event type: %s", innerEvent.Type)
+				
+				// Check for message type
+				if innerEvent.Type == string(slackevents.Message) {
+					// First, get the event as a slackevents.MessageEvent
+					slackEventsMessageEvent, ok := innerEvent.Data.(*slackevents.MessageEvent)
+					if !ok {
+						c.logger.Printf("❌ Error: slackevents.MessageEvent expected but got %T", innerEvent.Data)
+						continue
 					}
-					continue
-				}
-
-				// Process only messages from target users
-				user, err := c.GetUserInfo(ctx, messageEvent.User)
-				if err != nil {
-					c.logger.Printf("Error getting user info: %v", err)
-					continue
-				}
-
-				if c.logs {
-					c.logger.Printf("User info retrieved: %s (%s)", user.Name, user.ID)
-				}
-
-				if !c.targetUsers[user.Name] && !c.targetUsers[messageEvent.User] {
-					if c.debug || c.logs {
-						c.logger.Printf("Ignoring message from non-target user: %s (%s)", user.Name, messageEvent.User)
+					
+					// Create a compatible MessageEvent structure
+					// Using only the fields we need for our application to avoid field name mismatches
+					messageEvent := &slack.MessageEvent{
+						Msg: slack.Msg{
+							Channel:   slackEventsMessageEvent.Channel,
+							User:      slackEventsMessageEvent.User,
+							Text:      slackEventsMessageEvent.Text,
+							Timestamp: slackEventsMessageEvent.TimeStamp,
+							ThreadTimestamp: slackEventsMessageEvent.ThreadTimeStamp,
+							BotID:     slackEventsMessageEvent.BotID,
+							SubType:   slackEventsMessageEvent.SubType,
+						},
 					}
-					continue
-				}
 
-				if c.logs {
-					c.logger.Printf("Processing message from target user: %s, text: %s", user.Name, messageEvent.Text)
-				}
+					c.logger.Printf("📝 Message received - Channel: %s, User: %s, Text: %s", 
+						messageEvent.Channel, messageEvent.User, messageEvent.Text)
 
-				// Skip bot messages, including our own replies to avoid loops
-				if messageEvent.BotID != "" || messageEvent.SubType == "bot_message" {
-					if c.debug || c.logs {
-						c.logger.Println("Ignoring bot message")
+					// Skip bot messages, including our own replies to avoid loops
+					if messageEvent.BotID != "" || messageEvent.SubType == "bot_message" {
+						c.logger.Printf("⏩ Ignoring bot message from: %s", messageEvent.BotID)
+						continue
 					}
-					continue
-				}
 
-				// Process the message
-				if err := processor(ctx, messageEvent); err != nil {
-					c.logger.Printf("Error processing message: %v", err)
-				} else if c.logs {
-					c.logger.Printf("Successfully processed message from user: %s", user.Name)
+					// Debug all channel IDs
+					c.logger.Printf("🔍 Checking channel access - Message channel: %s, Monitored channels: %v", 
+						messageEvent.Channel, c.channelIDs)
+						
+					// Process only messages from monitored channels
+					if !c.channelIDs[messageEvent.Channel] {
+						c.logger.Printf("⏩ Ignoring message from non-monitored channel: %s", messageEvent.Channel)
+						continue
+					}
+
+					c.logger.Printf("✅ Channel match found: %s", messageEvent.Channel)
+
+					// Process only messages from target users
+					user, err := c.GetUserInfo(ctx, messageEvent.User)
+					if err != nil {
+						c.logger.Printf("❌ Error getting user info: %v", err)
+						continue
+					}
+
+					c.logger.Printf("👤 User info retrieved: %s (%s)", user.Name, user.ID)
+
+					// Debug all target users
+					c.logger.Printf("🔍 Checking user match - Message user: %s (%s), Target users: %v", 
+						user.Name, messageEvent.User, c.targetUsers)
+						
+					if !c.targetUsers[user.Name] && !c.targetUsers[messageEvent.User] {
+						c.logger.Printf("⏩ Ignoring message from non-target user: %s (%s)", user.Name, messageEvent.User)
+						continue
+					}
+
+					c.logger.Printf("✅ User match found: %s", user.Name)
+					c.logger.Printf("🎯 Processing message: '%s'", messageEvent.Text)
+
+					// Process the message
+					if err := processor(ctx, messageEvent); err != nil {
+						c.logger.Printf("❌ Error processing message: %v", err)
+					} else {
+						c.logger.Printf("✅ Successfully processed message from user: %s", user.Name)
+					}
+				} else {
+					c.logger.Printf("ℹ️ Received non-message event type: %s", innerEvent.Type)
 				}
+			} else {
+				c.logger.Printf("ℹ️ Received non-callback event type: %s", eventsAPIEvent.Type)
 			}
+		default:
+			c.logger.Printf("ℹ️ Received unhandled event type: %s", evt.Type)
 		}
 	}
 }
