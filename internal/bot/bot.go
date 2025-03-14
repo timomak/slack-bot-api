@@ -131,7 +131,7 @@ func (b *Bot) processMessages(ctx context.Context) {
 			b.logger.Printf("Sending message to OpenAI for Gen Alpha translation")
 		}
 		
-		translatedText, err := b.openai.TranslateToGenAlpha(ctx, event.Text, user.RealName)
+		translatedText, err := b.openai.TranslateToGenAlpha(ctx, event.Text, user.Profile.DisplayName)
 		if err != nil {
 			return fmt.Errorf("error translating message: %w", err)
 		}
@@ -143,20 +143,20 @@ func (b *Bot) processMessages(ctx context.Context) {
 		}
 
 		// Format the response
-		response := fmt.Sprintf("*%s's message in Gen Alpha:*\n%s", user.RealName, translatedText)
+		response := fmt.Sprintf("*%s's message in Gen Alpha:*\n%s", user.Profile.DisplayName, translatedText)
 
 		if b.logs {
-			b.logger.Printf("Posting translation as thread reply")
+			b.logger.Printf("Posting translation as channel message")
 		}
 
-		// Post the translated message as a thread
-		_, _, err = b.slack.CreateThread(ctx, event.Channel, event.Timestamp, response)
+		// Post the translated message directly to the channel
+		_, _, err = b.slack.PostMessage(ctx, event.Channel, response)
 		if err != nil {
 			return fmt.Errorf("error posting message: %w", err)
 		}
 
 		if b.logs {
-			b.logger.Printf("Successfully posted translation as thread reply in channel %s", event.Channel)
+			b.logger.Printf("Successfully posted translation in channel %s", event.Channel)
 		} else {
 			b.logger.Printf("Posted translated message for %s", user.Name)
 		}

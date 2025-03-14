@@ -93,6 +93,15 @@ DEBUG=false
 LOGS=true
 ```
 
+#### Channel Monitoring Configuration
+
+You have two options for channel monitoring:
+
+1. **Monitor specific channels**: Set `SLACK_CHANNEL_IDS` to a comma-separated list of channel IDs
+2. **Monitor all channels**: Leave `SLACK_CHANNEL_IDS` empty or remove it from the `.env` file
+
+When `SLACK_CHANNEL_IDS` is not specified, the bot will automatically monitor all channels it has been added to.
+
 ### 3. Install and Run
 
 #### Using Go
@@ -228,7 +237,7 @@ If all else fails, try:
 |----------------------|-------------|----------|---------|
 | `SLACK_BOT_TOKEN` | Slack Bot token starting with `xoxb-` | Yes | - |
 | `SLACK_APP_TOKEN` | Slack App token starting with `xapp-` | Yes | - |
-| `SLACK_CHANNEL_IDS` | Comma-separated list of channel IDs to monitor | Yes | - |
+| `SLACK_CHANNEL_IDS` | Comma-separated list of channel IDs to monitor (if empty, monitors all channels the bot is in) | No | - |
 | `SLACK_TARGET_USERS` | Comma-separated list of usernames or user IDs | Yes | - |
 | `OPENAI_API_KEY` | OpenAI API key | Yes | - |
 | `OPENAI_MODEL` | OpenAI model to use | No | `gpt-4` |
@@ -281,9 +290,9 @@ services:
 ## How It Works
 
 1. The bot connects to Slack using Socket Mode
-2. It listens for messages in the configured channels
+2. It listens for messages in all channels it has been added to (or specific configured channels)
 3. When a message from a target user is detected, it's sent to OpenAI for "translation"
-4. The translated version is posted as a thread reply to the original message
+4. The translated version is posted directly in the channel
 
 ## License
 

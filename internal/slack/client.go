@@ -19,11 +19,12 @@ import (
 type Client struct {
 	api          *slack.Client
 	socketClient *socketmode.Client
-	channelIDs   map[string]bool
+	channelIDs   map[string]bool // Will be nil if we're monitoring all channels
 	targetUsers  map[string]bool
 	logger       *log.Logger
 	debug        bool
 	logs         bool
+	monitorAllChannels bool
 }
 
 // New creates a new Slack client
@@ -42,25 +43,37 @@ func New(cfg *config.Config, logger *log.Logger) (*Client, error) {
 		socketmode.OptionLog(log.New(logger.Writer(), "socketmode: ", log.Lshortfile|log.LstdFlags)),
 	)
 
-	// Convert channel IDs to a map for faster lookup
-	channelIDs := make(map[string]bool)
-	for _, id := range cfg.SlackChannelIDs {
-		// Strip any whitespace
-		id = strings.TrimSpace(id)
-		if id != "" {
-			channelIDs[id] = true
+	// Check if we should monitor all channels
+	monitorAllChannels := len(cfg.SlackChannelIDs) == 0 || (len(cfg.SlackChannelIDs) == 1 && cfg.SlackChannelIDs[0] == "")
+	
+	var channelIDs map[string]bool
+	
+	if !monitorAllChannels {
+		// Convert channel IDs to a map for faster lookup
+		channelIDs = make(map[string]bool)
+		for _, id := range cfg.SlackChannelIDs {
+			// Strip any whitespace
+			id = strings.TrimSpace(id)
+			if id != "" {
+				channelIDs[id] = true
+			}
 		}
 	}
 
 	if cfg.Logs {
-		logger.Println("=== Slack Channel Configuration ===")
-		logger.Printf("Number of monitored channels: %d", len(cfg.SlackChannelIDs))
-		for i, id := range cfg.SlackChannelIDs {
-			logger.Printf("  Channel #%d: %s", i+1, id)
-			// Try to get channel info if possible
-			if channel, err := api.GetConversationInfo(&slack.GetConversationInfoInput{ChannelID: id}); err == nil {
-				logger.Printf("    Name: %s", channel.Name)
-				logger.Printf("    Is Channel: %v, Is Private: %v", channel.IsChannel, channel.IsPrivate)
+		if monitorAllChannels {
+			logger.Println("=== Slack Channel Configuration ===")
+			logger.Println("🔍 Bot will monitor ALL channels it has been added to")
+		} else {
+			logger.Println("=== Slack Channel Configuration ===")
+			logger.Printf("Number of monitored channels: %d", len(cfg.SlackChannelIDs))
+			for i, id := range cfg.SlackChannelIDs {
+				logger.Printf("  Channel #%d: %s", i+1, id)
+				// Try to get channel info if possible
+				if channel, err := api.GetConversationInfo(&slack.GetConversationInfoInput{ChannelID: id}); err == nil {
+					logger.Printf("    Name: %s", channel.Name)
+					logger.Printf("    Is Channel: %v, Is Private: %v", channel.IsChannel, channel.IsPrivate)
+				}
 			}
 		}
 	}
@@ -99,6 +112,7 @@ func New(cfg *config.Config, logger *log.Logger) (*Client, error) {
 		logger:       logger,
 		debug:        cfg.Debug,
 		logs:         cfg.Logs,
+		monitorAllChannels: monitorAllChannels,
 	}, nil
 }
 
@@ -145,46 +159,75 @@ func (c *Client) VerifySetup(ctx context.Context) error {
 	// Check each channel
 	c.logger.Println("Verifying channel access...")
 	channelErrors := false
-	
-	for channelID := range c.channelIDs {
-		channelInfo, err := c.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
-			ChannelID: channelID,
+
+	if c.monitorAllChannels {
+		c.logger.Println("🔍 Bot is configured to monitor ALL channels it has been added to")
+		
+		// Get all conversations the bot is a member of
+		channels, nextCursor, err := c.api.GetConversationsForUserContext(ctx, &slack.GetConversationsForUserParameters{
+			Types: []string{"public_channel", "private_channel"},
+			Limit: 100,
 		})
 		
 		if err != nil {
-			c.logger.Printf("❌ Channel access error for %s: %v", channelID, err)
+			c.logger.Printf("❌ Error fetching channels: %v", err)
 			channelErrors = true
-			continue
-		}
-		
-		// Check if bot is a member of the channel
-		members, _, err := c.api.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
-			ChannelID: channelID,
-		})
-		
-		if err != nil {
-			c.logger.Printf("❌ Cannot verify membership for channel %s (%s): %v", 
-				channelInfo.Name, channelID, err)
-			channelErrors = true
-			continue
-		}
-		
-		botInChannel := false
-		for _, memberID := range members {
-			if memberID == authTest.UserID {
-				botInChannel = true
-				break
+		} else {
+			if len(channels) == 0 {
+				c.logger.Println("⚠️ Bot is not a member of any channels. Please add the bot to channels using /invite @BotName")
+				channelErrors = true
+			} else {
+				c.logger.Printf("✅ Bot is a member of %d channels:", len(channels))
+				for _, channel := range channels {
+					c.logger.Printf("   - %s (%s)", channel.Name, channel.ID)
+				}
+				
+				if nextCursor != "" {
+					c.logger.Println("⚠️ Bot is in more than 100 channels. Only showing the first 100.")
+				}
 			}
 		}
-		
-		if !botInChannel {
-			c.logger.Printf("❌ Bot is NOT a member of channel %s (%s). Please add the bot using /invite @%s", 
-				channelInfo.Name, channelID, authTest.User)
-			channelErrors = true
-			continue
+	} else {
+		for channelID := range c.channelIDs {
+			channelInfo, err := c.api.GetConversationInfoContext(ctx, &slack.GetConversationInfoInput{
+				ChannelID: channelID,
+			})
+			
+			if err != nil {
+				c.logger.Printf("❌ Channel access error for %s: %v", channelID, err)
+				channelErrors = true
+				continue
+			}
+			
+			// Check if bot is a member of the channel
+			members, _, err := c.api.GetUsersInConversationContext(ctx, &slack.GetUsersInConversationParameters{
+				ChannelID: channelID,
+			})
+			
+			if err != nil {
+				c.logger.Printf("❌ Cannot verify membership for channel %s (%s): %v", 
+					channelInfo.Name, channelID, err)
+				channelErrors = true
+				continue
+			}
+			
+			botInChannel := false
+			for _, memberID := range members {
+				if memberID == authTest.UserID {
+					botInChannel = true
+					break
+				}
+			}
+			
+			if !botInChannel {
+				c.logger.Printf("❌ Bot is NOT a member of channel %s (%s). Please add the bot using /invite @%s", 
+					channelInfo.Name, channelID, authTest.User)
+				channelErrors = true
+				continue
+			}
+			
+			c.logger.Printf("✅ Channel verified: %s (%s)", channelInfo.Name, channelID)
 		}
-		
-		c.logger.Printf("✅ Channel verified: %s (%s)", channelInfo.Name, channelID)
 	}
 	
 	// Check user access
@@ -245,6 +288,63 @@ func (c *Client) VerifySetup(ctx context.Context) error {
 
 // testEventSubscription sends a test message to verify event subscriptions
 func (c *Client) testEventSubscription(ctx context.Context) {
+	// For all-channels mode, we need to find a channel to test
+	if c.monitorAllChannels {
+		c.logger.Println("🔍 Finding a channel to send test message...")
+		
+		// Get channels the bot is a member of
+		channels, _, err := c.api.GetConversationsForUserContext(ctx, &slack.GetConversationsForUserParameters{
+			Types: []string{"public_channel", "private_channel"},
+			Limit: 1,
+		})
+		
+		if err != nil {
+			c.logger.Printf("❌ Error fetching channels for test: %v", err)
+			c.logger.Println("⚠️ Skipping event subscription test")
+			return
+		}
+		
+		if len(channels) == 0 {
+			c.logger.Println("⚠️ Bot is not a member of any channels. Please add the bot to channels using /invite @BotName")
+			c.logger.Println("⚠️ Skipping event subscription test")
+			return
+		}
+		
+		// Skip sending test message if DEBUG mode is not enabled
+		if !c.debug {
+			c.logger.Println("ℹ️ Skipping self-test message (enable DEBUG=true to send test messages)")
+			c.logger.Println("⚠️ If you're not receiving events, check your Event Subscriptions in Slack API settings")
+			return
+		}
+		
+		// Use the first channel we find
+		channelID := channels[0].ID
+		c.logger.Printf("🧪 Sending a self-test message to channel %s (%s) to verify event subscriptions...", 
+			channels[0].Name, channelID)
+		
+		// Create a unique message so we can identify it
+		testMsg := fmt.Sprintf("🔍 Bot self-test message (timestamp: %s) - If you see this message but no events are logged, check your Event Subscriptions in Slack API", 
+			time.Now().Format(time.RFC3339))
+		
+		// Send the message
+		_, _, err = c.api.PostMessageContext(
+			ctx,
+			channelID,
+			slack.MsgOptionText(testMsg, false),
+		)
+		
+		if err != nil {
+			c.logger.Printf("❌ Failed to send test message: %v", err)
+			c.logger.Println("⚠️ This may indicate the bot lacks permissions to post in this channel")
+			return
+		}
+		
+		c.logger.Println("✅ Test message sent successfully")
+		c.logger.Println("⚠️ If you don't see any event logs after this, your Slack app's Event Subscriptions may not be set up correctly")
+		c.logger.Println("⚠️ Check that Socket Mode is enabled AND you've subscribed to message events in your Slack app settings")
+		return
+	}
+	
 	// Only try to send a test message if we have at least one channel
 	if len(c.channelIDs) == 0 {
 		c.logger.Println("⚠️ No channels configured, skipping event subscription test")
@@ -395,13 +495,17 @@ func (c *Client) ProcessEvents(ctx context.Context, processor func(ctx context.C
 					c.logger.Printf("🔍 Checking channel access - Message channel: %s, Monitored channels: %v", 
 						messageEvent.Channel, c.channelIDs)
 						
-					// Process only messages from monitored channels
-					if !c.channelIDs[messageEvent.Channel] {
+					// Process only messages from monitored channels if we're not monitoring all channels
+					if !c.monitorAllChannels && !c.channelIDs[messageEvent.Channel] {
 						c.logger.Printf("⏩ Ignoring message from non-monitored channel: %s", messageEvent.Channel)
 						continue
 					}
 
-					c.logger.Printf("✅ Channel match found: %s", messageEvent.Channel)
+					if c.monitorAllChannels {
+						c.logger.Printf("✅ Processing message from channel: %s (monitoring all channels)", messageEvent.Channel)
+					} else {
+						c.logger.Printf("✅ Channel match found: %s", messageEvent.Channel)
+					}
 
 					// Process only messages from target users
 					user, err := c.GetUserInfo(ctx, messageEvent.User)

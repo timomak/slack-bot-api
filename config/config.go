@@ -46,9 +46,10 @@ func Load() (*Config, error) {
 	}
 
 	channelIDs := os.Getenv("SLACK_CHANNEL_IDS")
-	if channelIDs == "" {
-		return nil, errors.New("SLACK_CHANNEL_IDS environment variable is required")
-	}
+	// No longer required, will monitor all channels if not specified
+	// if channelIDs == "" {
+	// 	return nil, errors.New("SLACK_CHANNEL_IDS environment variable is required")
+	// }
 
 	targetUsers := os.Getenv("SLACK_TARGET_USERS")
 	if targetUsers == "" {
