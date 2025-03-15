@@ -131,7 +131,10 @@ func (b *Bot) processMessages(ctx context.Context) {
 			b.logger.Printf("Sending message to OpenAI for Gen Alpha translation")
 		}
 		
-		translatedText, err := b.openai.TranslateToGenAlpha(ctx, event.Text, user.Profile.DisplayName)
+		// Get the best display name using the fallback logic
+		displayName := getDisplayName(user)
+		
+		translatedText, err := b.openai.TranslateToGenAlpha(ctx, event.Text, displayName)
 		if err != nil {
 			return fmt.Errorf("error translating message: %w", err)
 		}
@@ -142,8 +145,8 @@ func (b *Bot) processMessages(ctx context.Context) {
 			b.logger.Printf("  Translated: %s", translatedText)
 		}
 
-		// Format the response
-		response := fmt.Sprintf("*%s's message in Gen Alpha:*\n%s", user.Profile.DisplayName, translatedText)
+		// Format the response using the best display name
+		response := fmt.Sprintf("*%s's message in Gen Alpha:*\n%s", displayName, translatedText)
 
 		if b.logs {
 			b.logger.Printf("Posting translation as channel message")
@@ -163,4 +166,18 @@ func (b *Bot) processMessages(ctx context.Context) {
 		
 		return nil
 	})
+}
+
+// getDisplayName returns the best available display name for a user
+// with fallback logic: Profile.DisplayName -> Name -> RealName
+func getDisplayName(user *slack.User) string {
+	if user.Profile.DisplayName != "" {
+		return user.Profile.DisplayName
+	}
+	
+	if user.Name != "" {
+		return user.Name
+	}
+	
+	return user.RealName
 } 
