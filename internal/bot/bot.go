@@ -146,7 +146,7 @@ func (b *Bot) processMessages(ctx context.Context) {
 		}
 
 		// Format the response using the best display name
-		response := fmt.Sprintf("*%s's message in Gen Alpha:*\n%s", displayName, translatedText)
+		response := translatedText
 
 		if b.logs {
 			b.logger.Printf("Posting translation as channel message")
